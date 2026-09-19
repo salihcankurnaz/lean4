@@ -6,6 +6,7 @@ public import CollectAxioms.Chain.Top
 public import CollectAxioms.Chain.Middle
 public import CollectAxioms.Chain.Bottom
 public import CollectAxioms.Cycle
+public import CollectAxioms.MutualCycle
 
 /-! ## Diamond imports with same-named private axioms
 
@@ -92,3 +93,21 @@ public theorem usesS9 (_ : S9) : True := trivial
 /-- info: 'usesS9' depends on axioms: [Classical.choice] -/
 #guard_msgs in
 #print axioms usesS9
+
+/-! ## Mutual inductive cycles across an import boundary -/
+
+/-- info: 'M1' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms M1
+
+/-- info: 'M1.mk' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms M1.mk
+
+/-- info: 'M2' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms M2
+
+/-- info: 'M2.mk' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms M2.mk
