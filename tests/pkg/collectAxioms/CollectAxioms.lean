@@ -79,7 +79,7 @@ public noncomputable def usesMultiple : Nat := chainDef.casesOn myAxiom
 The constructor type mentions its inductive, while the inductive visits its constructor.
 The shared export cache must not persist an in-progress result as an axiom-free result. -/
 
-theorem usesS9 (_ : S9) : True := trivial
+public theorem usesS9 (_ : S9) : True := trivial
 
 /-- info: 'S9' depends on axioms: [Classical.choice] -/
 #guard_msgs in
