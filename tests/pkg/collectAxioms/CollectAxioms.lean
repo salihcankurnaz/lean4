@@ -5,6 +5,7 @@ public import CollectAxioms.Right
 public import CollectAxioms.Chain.Top
 public import CollectAxioms.Chain.Middle
 public import CollectAxioms.Chain.Bottom
+public import CollectAxioms.Cycle
 
 /-! ## Diamond imports with same-named private axioms
 
@@ -72,3 +73,22 @@ public noncomputable def usesMultiple : Nat := chainDef.casesOn myAxiom
 /-- info: 'usesMultiple' depends on axioms: [chainAx, myAxiom] -/
 #guard_msgs in
 #print axioms usesMultiple
+
+/-! ## Cyclic inductive/constructor dependencies across an import boundary
+
+The constructor type mentions its inductive, while the inductive visits its constructor.
+The shared export cache must not persist an in-progress result as an axiom-free result. -/
+
+theorem usesS9 (_ : S9) : True := trivial
+
+/-- info: 'S9' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms S9
+
+/-- info: 'S9.mk' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms S9.mk
+
+/-- info: 'usesS9' depends on axioms: [Classical.choice] -/
+#guard_msgs in
+#print axioms usesS9
