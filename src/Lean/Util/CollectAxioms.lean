@@ -12,17 +12,11 @@ namespace Lean
 
 namespace CollectAxioms
 
-private inductive CacheEntry where
-  /-- The declaration is currently being traversed. -/
-  | active
-  /-- The traversal encountered an active dependency, so this result is not safe to reuse. -/
-  | incomplete
-  /-- A complete, reusable set of axiom dependencies. -/
-  | done (axioms : Array Name)
-
 structure State where
-  /-- Cache and traversal state for constants. -/
-  seen   : NameMap CacheEntry := {}
+  /-- Cache mapping constants to their completed (sorted) axiom dependencies. -/
+  seen   : NameMap (Array Name) := {}
+  /-- Constants on the current recursion stack. -/
+  active : NameSet := {}
   /-- Axioms accumulated for the current constant being processed. -/
   axioms : NameSet := {}
   /-- Active declarations whose contribution was skipped while closing a dependency cycle. -/
@@ -38,13 +32,13 @@ private def insertArray (s : NameSet) (axs : Array Name) : NameSet :=
 
 /--
 Collect axioms reachable from constant `c`, using `extFind?` to look up pre-computed axioms
-for imported declarations. Results are cached in `State.seen`.
+for imported declarations. Completed results are cached in `State.seen`.
 
-An `active` cache entry marks a declaration on the current recursion stack. Encountering one
-records an open dependency instead of treating the temporary marker as a completed empty result.
-Results that still depend on an outer active declaration are marked `incomplete` and recomputed
-when needed. When the traversal returns to the declaration that opened a cycle, that dependency
-is closed and the now-complete result can be cached.
+`State.active` tracks the current recursion stack. Encountering an active declaration records
+an open dependency instead of treating an in-progress traversal as an empty completed result.
+A result that still depends on an outer active declaration is not cached; it will be recomputed
+if requested later. When the traversal returns to the declaration that opened a cycle, that
+dependency is closed and the now-complete result can be cached.
 -/
 private partial def collect
     (extFind? : Environment → Name → Option (Array Name))
@@ -52,25 +46,21 @@ private partial def collect
   let env ← read
   -- Check extension for pre-computed axioms (imported declarations)
   if let some axs := extFind? env c then
-    modify fun s => { s with axioms := insertArray s.axioms axs, seen := s.seen.insert c (.done axs) }
+    modify fun s => { s with axioms := insertArray s.axioms axs, seen := s.seen.insert c axs }
     return
-  -- Check local cache
+  -- Check completed local cache
   let s ← get
-  if let some entry := s.seen.find? c then
-    match entry with
-    | .done axs =>
-      modify fun s => { s with axioms := insertArray s.axioms axs }
-      return
-    | .active =>
-      -- Do not use the in-progress result. Propagate the open dependency until the
-      -- traversal returns to `c`, where the cycle can be closed safely.
-      modify fun s => { s with openDeps := s.openDeps.push c }
-      return
-    | .incomplete => pure ()
-  -- Recurse: temporarily clear axioms to isolate this constant's contribution.
+  if let some axs := s.seen.find? c then
+    modify fun s => { s with axioms := insertArray s.axioms axs }
+    return
+  -- A back-edge into the current traversal closes a dependency cycle later.
+  if s.active.contains c then
+    modify fun s => { s with openDeps := s.openDeps.push c }
+    return
+  -- Recurse: temporarily clear axioms and open dependencies to isolate this constant's contribution.
   let savedAxioms := s.axioms
   let savedOpenDeps := s.openDeps
-  modify fun s => { s with axioms := {}, openDeps := #[], seen := s.seen.insert c .active }
+  modify fun s => { s with axioms := {}, openDeps := #[], active := s.active.insert c }
   let collectExpr (e : Expr) : M Unit := e.getUsedConstants.forM (collect extFind?)
   -- Take constants from the kernel env, which may differ from the elab env for (async) errors.
   match env.checked.get.find? c with
@@ -87,14 +77,14 @@ private partial def collect
   | none                 => pure ()
   let s ← get
   let collected := s.axioms
-  -- An open dependency on `c` represents a back-edge into the current traversal. At this
-  -- point all dependencies reachable from `c` have been traversed, so that dependency is
-  -- closed. Dependencies on outer active declarations still make this result incomplete.
+  -- Remove back-edges to this declaration: all of its dependencies have now been traversed.
+  -- Any remaining open dependency points to an outer active declaration, so this result is
+  -- incomplete and must not be cached.
   let openDeps := s.openDeps.filter fun dep => dep != c
   let result := collected.toArray.qsort Name.lt
-  let entry := if openDeps.isEmpty then CacheEntry.done result else CacheEntry.incomplete
   modify fun s => { s with
-    seen     := s.seen.insert c entry
+    seen     := if openDeps.isEmpty then s.seen.insert c result else s.seen
+    active   := s.active.erase c
     axioms   := insertArray savedAxioms result
     openDeps := savedOpenDeps ++ openDeps
   }
@@ -104,9 +94,8 @@ private def collectAndGet
     (extFind? : Environment → Name → Option (Array Name))
     (c : Name) : M (Array Name) := do
   collect extFind? c
-  match (← get).seen.find? c with
-  | some (.done axs) => return axs
-  | _ => panic! s!"collectAndGet: '{c}' has no complete cache entry after collect"
+  let some axs := (← get).seen.find? c | panic! s!"collectAndGet: '{c}' not in seen after collect"
+  return axs
 
 end CollectAxioms
 
