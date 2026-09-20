@@ -13,10 +13,14 @@ namespace Lean
 namespace CollectAxioms
 
 structure State where
-  /-- Cache mapping constants to their (sorted) axiom dependencies. -/
+  /-- Cache mapping constants to their completed (sorted) axiom dependencies. -/
   seen   : NameMap (Array Name) := {}
+  /-- Constants on the current recursion stack. -/
+  active : NameSet := {}
   /-- Axioms accumulated for the current constant being processed. -/
   axioms : NameSet := {}
+  /-- Active declarations whose contribution was skipped while closing a dependency cycle. -/
+  openDeps : Array Name := #[]
 
 abbrev M := ReaderT Environment $ StateM State
 
@@ -28,11 +32,13 @@ private def insertArray (s : NameSet) (axs : Array Name) : NameSet :=
 
 /--
 Collect axioms reachable from constant `c`, using `extFind?` to look up pre-computed axioms
-for imported declarations. Results are cached in `State.seen`.
+for imported declarations. Completed results are cached in `State.seen`.
 
-When processing a constant not found in `extFind?` or the cache, the function temporarily
-clears the axiom accumulator, recurses into the constant's dependencies, caches the result
-in `seen`, and merges the collected axioms back.
+`State.active` tracks the current recursion stack. Encountering an active declaration records
+an open dependency instead of treating an in-progress traversal as an empty completed result.
+A result that still depends on an outer active declaration is not cached; it will be recomputed
+if requested later. When the traversal returns to the declaration that opened a cycle, that
+dependency is closed and the now-complete result can be cached.
 -/
 private partial def collect
     (extFind? : Environment → Name → Option (Array Name))
@@ -42,15 +48,19 @@ private partial def collect
   if let some axs := extFind? env c then
     modify fun s => { s with axioms := insertArray s.axioms axs, seen := s.seen.insert c axs }
     return
-  -- Check local cache
+  -- Check completed local cache
   let s ← get
   if let some axs := s.seen.find? c then
     modify fun s => { s with axioms := insertArray s.axioms axs }
     return
-  -- Recurse: temporarily clear axioms to isolate this constant's contribution.
-  -- Insert sentinel to prevent infinite recursion (e.g., inductives ↔ constructors).
+  -- A back-edge into the current traversal closes a dependency cycle later.
+  if s.active.contains c then
+    modify fun s => { s with openDeps := s.openDeps.push c }
+    return
+  -- Recurse: temporarily clear axioms and open dependencies to isolate this constant's contribution.
   let savedAxioms := s.axioms
-  modify fun s => { s with axioms := {}, seen := s.seen.insert c #[] }
+  let savedOpenDeps := s.openDeps
+  modify fun s => { s with axioms := {}, openDeps := #[], active := s.active.insert c }
   let collectExpr (e : Expr) : M Unit := e.getUsedConstants.forM (collect extFind?)
   -- Take constants from the kernel env, which may differ from the elab env for (async) errors.
   match env.checked.get.find? c with
@@ -65,12 +75,18 @@ private partial def collect
   | some (.recInfo v)    => collectExpr v.type
   | some (.inductInfo v) => collectExpr v.type *> v.ctors.forM (collect extFind?)
   | none                 => pure ()
-  -- Cache result (sorted for canonical order) and merge back into saved axioms
-  let collected := (← get).axioms
+  let s ← get
+  let collected := s.axioms
+  -- Remove back-edges to this declaration: all of its dependencies have now been traversed.
+  -- Any remaining open dependency points to an outer active declaration, so this result is
+  -- incomplete and must not be cached.
+  let openDeps := s.openDeps.filter fun dep => dep != c
   let result := collected.toArray.qsort Name.lt
   modify fun s => { s with
-    seen   := s.seen.insert c result
-    axioms := insertArray savedAxioms result
+    seen     := if openDeps.isEmpty then s.seen.insert c result else s.seen
+    active   := s.active.erase c
+    axioms   := insertArray savedAxioms result
+    openDeps := savedOpenDeps ++ openDeps
   }
 
 /-- Collect axioms for `c` and return its sorted axiom list from the cache. -/
